@@ -117,6 +117,7 @@
 #define POLYDIR_SHARED        0x00000008 /* share context/level instances among users */
 #define POLYDIR_ISCRIPT       0x00000010 /* non default init script */
 #define POLYDIR_MNTOPTS       0x00000020 /* mount options for tmpfs mount */
+#define POLYDIR_UNION         0x00000040 /* aufs mount over polydir  */
 
 
 #define NAMESPACE_MAX_DIR_LEN 80

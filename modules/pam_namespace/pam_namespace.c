@@ -230,6 +230,20 @@ static int parse_iscript_params(char *params, struct polydir_s *poly)
     return 0;
 }
 
+static int is_legal_aufs_path(char* path)
+{
+    /*
+     * From aufs(5):
+     *   Comma, colon and the permission flags string (including ‘=’) in
+     *   the path are not allowed.
+     */
+    return strchr(path, ',')==NULL &&
+	    strchr(path, ',')==NULL &&
+	    strstr(path, "=rw")==NULL &&
+	    strstr(path, "=ro")==NULL &&
+	    strstr(path, "=rr")==NULL;
+}
+
 static int parse_method(char *method, struct polydir_s *poly,
 		struct instance_data *idata)
 {
@@ -238,9 +252,9 @@ static int parse_method(char *method, struct polydir_s *poly,
     static const char *method_names[] = { "user", "context", "level", "tmpdir",
 	"tmpfs", NULL };
     static const char *flag_names[] = { "create", "noinit", "iscript",
-	"shared", "mntopts", NULL };
+	"shared", "mntopts", "union", NULL };
     static const unsigned int flag_values[] = { POLYDIR_CREATE, POLYDIR_NOINIT,
-	POLYDIR_ISCRIPT, POLYDIR_SHARED, POLYDIR_MNTOPTS };
+	POLYDIR_ISCRIPT, POLYDIR_SHARED, POLYDIR_MNTOPTS, POLYDIR_UNION };
     int i;
     char *flag;
 
@@ -292,6 +306,17 @@ static int parse_method(char *method, struct polydir_s *poly,
 				if ((poly->mount_opts = strdup(flag+namelen+1)) == NULL) {
 					pam_syslog(idata->pamh, LOG_CRIT, "Memory allocation error");
 					return -1;
+				}
+				break;
+
+			    case POLYDIR_UNION:
+				if (!is_legal_aufs_path(poly->dir)) {
+				    pam_syslog(idata->pamh, LOG_CRIT, "Illegal polydir path for aufs");
+				    return -1;
+				}
+				if (!is_legal_aufs_path(poly->rdir)) {
+				    pam_syslog(idata->pamh, LOG_CRIT, "Illegal instance path for aufs");
+				    return -1;
 				}
 				break;
 			}
@@ -1458,6 +1483,7 @@ static int ns_setup(struct polydir_s *polyptr,
     int newdir = 1;
     char *inst_dir = NULL;
     char *instname = NULL;
+    char *aufs_opts = NULL;
     struct stat statbuf;
 #ifdef WITH_SELINUX
     security_context_t instcontext = NULL, origcontext = NULL;
@@ -1554,15 +1580,29 @@ static int ns_setup(struct polydir_s *polyptr,
         goto error_out;
     }
 
-    /*
-     * Bind mount instance directory on top of the polyinstantiated
-     * directory to provide an instance of polyinstantiated directory
-     * based on polyinstantiated method.
-     */
-    if (mount(inst_dir, polyptr->dir, NULL, MS_BIND, NULL) < 0) {
-        pam_syslog(idata->pamh, LOG_ERR, "Error mounting %s on %s, %m",
-                   inst_dir, polyptr->dir);
-        goto error_out;
+    if (!(polyptr->flags & POLYDIR_UNION)) {
+	    /*
+	     * Bind mount instance directory on top of the polyinstantiated
+	     * directory to provide an instance of polyinstantiated directory
+	     * based on polyinstantiated method.
+	     */
+	    if (mount(inst_dir, polyptr->dir, NULL, MS_BIND, NULL) < 0) {
+		pam_syslog(idata->pamh, LOG_ERR, "Error mounting %s on %s, %m",
+			   inst_dir, polyptr->dir);
+		goto error_out;
+	    }
+    } else {
+	    if (asprintf(&aufs_opts, "br=%s:%s", inst_dir, polyptr->dir) == -1) {
+		pam_syslog(idata->pamh, LOG_ERR, "Error aufs mounting %s on %s, %m",
+			   inst_dir, polyptr->dir);
+		goto error_out;
+	    }
+
+	    if (mount(inst_dir, polyptr->dir, "aufs", 0, aufs_opts) < 0) {
+		pam_syslog(idata->pamh, LOG_ERR, "Error aufs mounting %s on %s, %m",
+			   inst_dir, polyptr->dir);
+		goto error_out;
+	    }
     }
 
     if (!(polyptr->flags & POLYDIR_NOINIT))
@@ -1578,6 +1618,7 @@ error_out:
     retval = PAM_SESSION_ERR;
 
 cleanup:
+    free(aufs_opts);
     free(inst_dir);
     free(instname);
 #ifdef WITH_SELINUX
