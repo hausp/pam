@@ -230,6 +230,14 @@ static int parse_iscript_params(char *params, struct polydir_s *poly)
     return 0;
 }
 
+/**
+ * Check if we can mount directly on top of the polydir_s.dir, or we
+ * need to go through polydir_s.rdir.
+ */
+static int can_mount_polydir_directly(const struct polydir_s* s) {
+	return s->method == TMPFS && !(s->flags & POLYDIR_UNION);
+}
+
 static int is_legal_aufs_path(char* path)
 {
     /*
@@ -484,7 +492,7 @@ static int process_line(char *line, const char *home, const char *rhome,
     /*
      * Ensure that all pathnames are absolute path names.
      */
-    if ((poly->dir[0] != '/') || (poly->method != TMPFS && poly->instance_prefix[0] != '/')) {
+    if ((poly->dir[0] != '/') || (!can_mount_polydir_directly(poly) && poly->instance_prefix[0] != '/')) {
         pam_syslog(idata->pamh, LOG_NOTICE, "Pathnames must start with '/'");
         goto skipping;
     }
@@ -1509,7 +1517,7 @@ static int ns_setup(struct polydir_s *polyptr,
 	close(retval);
     }
 
-    if (polyptr->method == TMPFS) {
+    if (polyptr->method == TMPFS && can_mount_polydir_directly(polyptr)) {
 	if (mount("tmpfs", polyptr->dir, "tmpfs", 0, polyptr->mount_opts) < 0) {
 	    pam_syslog(idata->pamh, LOG_ERR, "Error mounting tmpfs on %s, %m",
 		polyptr->dir);
@@ -1580,29 +1588,41 @@ static int ns_setup(struct polydir_s *polyptr,
         goto error_out;
     }
 
-    if (!(polyptr->flags & POLYDIR_UNION)) {
-	    /*
-	     * Bind mount instance directory on top of the polyinstantiated
-	     * directory to provide an instance of polyinstantiated directory
-	     * based on polyinstantiated method.
-	     */
-	    if (mount(inst_dir, polyptr->dir, NULL, MS_BIND, NULL) < 0) {
-		pam_syslog(idata->pamh, LOG_ERR, "Error mounting %s on %s, %m",
-			   inst_dir, polyptr->dir);
-		goto error_out;
-	    }
-    } else {
-	    if (asprintf(&aufs_opts, "br=%s:%s", inst_dir, polyptr->dir) == -1) {
-		pam_syslog(idata->pamh, LOG_ERR, "Error aufs mounting %s on %s, %m",
-			   inst_dir, polyptr->dir);
-		goto error_out;
-	    }
+    if (polyptr->method == TMPFS) {
+	if (mount("tmpfs", inst_dir, "tmpfs", 0, polyptr->mount_opts) < 0) {
+	    pam_syslog(idata->pamh, LOG_ERR, "Error mounting tmpfs on %s, %m",
+		inst_dir);
+            return PAM_SESSION_ERR;
+	}
+    }
 
-	    if (mount(inst_dir, polyptr->dir, "aufs", 0, aufs_opts) < 0) {
-		pam_syslog(idata->pamh, LOG_ERR, "Error aufs mounting %s on %s, %m",
-			   inst_dir, polyptr->dir);
-		goto error_out;
-	    }
+    if (!(polyptr->flags & POLYDIR_UNION)) {
+	/*
+	 * Bind mount instance directory on top of the polyinstantiated
+	 * directory to provide an instance of polyinstantiated directory
+	 * based on polyinstantiated method.
+	 */
+	if (mount(inst_dir, polyptr->dir, NULL, MS_BIND, NULL) < 0) {
+	    pam_syslog(idata->pamh, LOG_ERR, "Error mounting %s on %s, %m",
+		       inst_dir, polyptr->dir);
+	    goto error_out;
+	}
+    } else {
+	/*
+	 * Use aufs to add the instance directory as writable branch of the
+	 * polyinstantiated directory.
+	 */
+	if (asprintf(&aufs_opts, "br=%s:%s", inst_dir, polyptr->dir) == -1) {
+	    pam_syslog(idata->pamh, LOG_ERR, "Error aufs mounting %s on %s, %m",
+		    inst_dir, polyptr->dir);
+	    goto error_out;
+	}
+
+	if (mount(inst_dir, polyptr->dir, "aufs", 0, aufs_opts) < 0) {
+	    pam_syslog(idata->pamh, LOG_ERR, "Error aufs mounting %s on %s, %m",
+		    inst_dir, polyptr->dir);
+	    goto error_out;
+	}
     }
 
     if (!(polyptr->flags & POLYDIR_NOINIT))
